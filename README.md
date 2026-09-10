@@ -98,3 +98,13 @@ func NewCache() *Cache {
 	return c
 }
 ```
+
+## Testing
+
+Run the test suite with:
+
+```sh
+make test
+```
+
+This runs `go test ./... -json` piped through [`sift`](https://github.com/timtatt/sift), a helper that renders Go's JSON test output in a human-readable form.
