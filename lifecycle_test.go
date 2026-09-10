@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -86,4 +87,13 @@ func TestShutdownCalledExactlyOnce(t *testing.T) {
 	assertions.ErrorIs(err, ErrComponentStop)
 	assertions.EqualValues(1, child.shutdownCount.Load(), "child should be shut down exactly once")
 	assertions.EqualValues(1, grandchild.shutdownCount.Load(), "grandchild should be shut down exactly once")
+}
+
+func TestHandlerErrorNotDuplicated(t *testing.T) {
+	component := &BaseComponent{}
+	component.AddReadyHandler(func(ctx context.Context) error { return errors.New("boom") })
+
+	err := component.Ready(context.Background())
+
+	assert.EqualError(t, err, "boom")
 }

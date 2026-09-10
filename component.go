@@ -2,6 +2,7 @@ package lifecycle
 
 import "context"
 
+// Component is a unit managed by a Node. Run must return once ctx is cancelled: Shutdown isn't called until it does.
 type Component interface {
 	Name() string
 	Ready(ctx context.Context) error
@@ -21,7 +22,7 @@ func (b *BaseComponent) Ready(ctx context.Context) error {
 	for i, handler := range b.ReadyHandlers {
 		fns[i] = handler
 	}
-	return runComponents(ctx, fns...)
+	return runAll(ctx, fns...)
 }
 
 func (b *BaseComponent) Shutdown(ctx context.Context) error {
@@ -29,7 +30,7 @@ func (b *BaseComponent) Shutdown(ctx context.Context) error {
 	for i, handler := range b.ShutdownHandlers {
 		fns[i] = handler
 	}
-	return runComponents(ctx, fns...)
+	return runAll(ctx, fns...)
 }
 
 func (b *BaseComponent) AddReadyHandler(handler ReadyFunc) {
