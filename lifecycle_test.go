@@ -52,6 +52,6 @@ func TestLifecycle(t *testing.T) {
 		counter++
 	}}, app)
 	err := root.Run(context.Background())
-	assertions.ErrorIs(err, ComponentStopErr)
+	assertions.ErrorIs(err, ErrComponentStop)
 	assertions.Equal(3, counter, "3 components should be run")
 }

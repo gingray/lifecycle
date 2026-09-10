@@ -108,3 +108,12 @@ make test
 ```
 
 This runs `go test ./... -json` piped through [`sift`](https://github.com/timtatt/sift), a helper that renders Go's JSON test output in a human-readable form.
+
+## Linting
+
+```sh
+make lint   # golangci-lint
+make vet    # go vet
+```
+
+`lint` requires [`golangci-lint`](https://golangci-lint.run/) to be installed locally.

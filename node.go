@@ -13,7 +13,7 @@ const (
 	ShutdownFinish   = "shutdown-finish"
 )
 
-var ComponentStopErr = errors.New("component-stop")
+var ErrComponentStop = errors.New("component-stop")
 
 type strategy interface {
 	Process(ctx context.Context, baseNode *Node) error

@@ -34,7 +34,7 @@ func (i *DefaultStrategy) Process(ctx context.Context, node *Node) error {
 		err = errors.Join(err, compErr)
 	}
 	node.logger.Info("supervisor", "status", ShutdownStart, "component", node.Component.Name())
-	stopErr := fmt.Errorf("component: %s, %w", node.Component.Name(), ComponentStopErr)
+	stopErr := fmt.Errorf("component: %s, %w", node.Component.Name(), ErrComponentStop)
 	err = errors.Join(err, node.Component.Shutdown(ctx), stopErr)
 	node.logger.Info("supervisor", "status", ShutdownFinish, "component", node.Component.Name())
 	return err
