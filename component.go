@@ -1,10 +1,6 @@
 package lifecycle
 
-import (
-	"context"
-
-	"golang.org/x/sync/errgroup"
-)
+import "context"
 
 type Component interface {
 	Name() string
@@ -21,27 +17,19 @@ type BaseComponent struct {
 }
 
 func (b *BaseComponent) Ready(ctx context.Context) error {
-	g, errCtx := errgroup.WithContext(ctx)
-
-	for _, handler := range b.ReadyHandlers {
-		g.Go(func() error {
-			return handler(errCtx)
-		})
+	fns := make([]func(context.Context) error, len(b.ReadyHandlers))
+	for i, handler := range b.ReadyHandlers {
+		fns[i] = handler
 	}
-	err := g.Wait()
-	return err
+	return runComponents(ctx, fns...)
 }
 
 func (b *BaseComponent) Shutdown(ctx context.Context) error {
-	g, errCtx := errgroup.WithContext(ctx)
-
-	for _, handler := range b.ShutdownHandlers {
-		g.Go(func() error {
-			return handler(errCtx)
-		})
+	fns := make([]func(context.Context) error, len(b.ShutdownHandlers))
+	for i, handler := range b.ShutdownHandlers {
+		fns[i] = handler
 	}
-	err := g.Wait()
-	return err
+	return runComponents(ctx, fns...)
 }
 
 func (b *BaseComponent) AddReadyHandler(handler ReadyFunc) {

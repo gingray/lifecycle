@@ -9,8 +9,9 @@ Modern services are rarely a single loop — an HTTP server, a background schedu
 - **Dependency-ordered startup and shutdown** — model components as a tree of nodes; children start once their parent is running and shut down before it, so shared dependencies (a database pool, a broker connection) always outlive the components that use them.
 - **Readiness gating** — every component implements a `Ready` check that must succeed before it starts running.
 - **Concurrent by default** — sibling components run and shut down concurrently via `errgroup`, so independent parts of your app aren't held up by one another.
-- **Signal-aware root** — `DefaultRoot` wires up `SIGINT`/`SIGTERM` handling out of the box, triggering an orderly shutdown of the whole tree.
-- **Pluggable logging** — bring your own logger via a minimal `Logger` interface.
+- **Signal-aware root** — `DefaultRoot` wires up `SIGINT`/`SIGTERM` handling out of the box (overridable via `WithSignals`), triggering an orderly shutdown of the whole tree.
+- **Bounded shutdown** — optionally cap how long shutdown is allowed to take with `WithShutdownTimeout`, independent of how long the app was running.
+- **Pluggable logging** — bring your own logger via a minimal `Logger` interface, or omit it entirely (defaults to a no-op `NopLogger`).
 - **Zero-boilerplate components** — embed `BaseComponent` to get `Ready`/`Shutdown` handler registration for free.
 
 ## Installation
@@ -28,6 +29,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gingray/lifecycle"
 )
@@ -50,7 +52,7 @@ func (s *HTTPServer) Shutdown(ctx context.Context) error {
 
 func main() {
 	logger := slog.Default()
-	root := lifecycle.DefaultRoot(logger)
+	root := lifecycle.DefaultRoot(logger, lifecycle.WithShutdownTimeout(30*time.Second))
 
 	db := root.ThenLast(NewDatabase())     // starts first, stops last
 	db.Then(NewHTTPServer(), NewScheduler(), NewKafkaConsumer())
@@ -80,9 +82,9 @@ Components are attached to a `Node` tree with `Then`, `ThenFirst`, `ThenLast`, a
 
 1. `Ready` is checked before the component is considered eligible to run.
 2. `Run` starts, and the node's children begin their own `Ready` → `Run` sequence, all running concurrently.
-3. When the context is cancelled (by a shutdown signal, an error, or any component returning), children are shut down first, depth-first and in reverse order of startup, followed by the node itself.
+3. When any component in the tree stops (a shutdown signal, an error, or a natural return), the shared context is cancelled, which cascades: each node waits for its own component and all of its children to stop, then shuts its own component down exactly once — bottom-up, so a component is never shut down while something that depends on it is still running.
 
-This ordering guarantees that a component is never shut down while something that depends on it is still running.
+`Node` also exposes a standalone `Shutdown(ctx)` method for tearing down a subtree manually (outside of `Run`), which applies the same bottom-up, all-children-visited semantics.
 
 For components that don't need custom orchestration, embed `BaseComponent` and register handlers instead of implementing `Ready`/`Shutdown` directly:
 
@@ -97,6 +99,17 @@ func NewCache() *Cache {
 	c.AddShutdownHandler(func(ctx context.Context) error { /* flush */ return nil })
 	return c
 }
+```
+
+## Configuration
+
+`DefaultRoot` (and `GetNodeCreator`) accept functional options:
+
+```go
+root := lifecycle.DefaultRoot(logger,
+	lifecycle.WithShutdownTimeout(30*time.Second), // bound the shutdown phase; unset means unbounded
+	lifecycle.WithSignals(syscall.SIGTERM),         // override the default os.Interrupt + syscall.SIGTERM
+)
 ```
 
 ## Testing

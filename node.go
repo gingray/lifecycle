@@ -3,41 +3,51 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 const (
 	ReadyCheckStart  = "ready-check-start"
 	ReadyCheckFinish = "ready-check-finish"
-	Run              = "running"
+	RunStart         = "running"
 	ShutdownStart    = "shutdown-start"
 	ShutdownFinish   = "shutdown-finish"
 )
 
 var ErrComponentStop = errors.New("component-stop")
 
-type strategy interface {
-	Process(ctx context.Context, baseNode *Node) error
-}
-
 type Node struct {
-	Component   Component
-	Nodes       []*Node
-	logger      Logger
-	strategy    strategy
-	nodeCreator func(component Component) *Node
+	Component       Component
+	Nodes           []*Node
+	logger          Logger
+	shutdownTimeout time.Duration
+	nodeCreator     func(component Component) *Node
 }
 
-func DefaultRoot(logger Logger) *Node {
-	creator := GetNodeCreator(logger)
-	root := creator(NewRootComponent())
-	return root
+func DefaultRoot(logger Logger, opts ...Option) *Node {
+	cfg := newConfig(opts)
+	creator := newNodeCreator(logger, cfg)
+	return creator(NewRootComponent(cfg.signals...))
 }
 
-func GetNodeCreator(logger Logger) func(component Component) *Node {
+func GetNodeCreator(logger Logger, opts ...Option) func(component Component) *Node {
+	return newNodeCreator(logger, newConfig(opts))
+}
+
+func newNodeCreator(logger Logger, cfg *config) func(component Component) *Node {
+	if logger == nil {
+		logger = NopLogger{}
+	}
+
 	var creator func(component Component) *Node
 	creator = func(component Component) *Node {
-		return &Node{Component: component, Nodes: []*Node{}, logger: logger, strategy: &DefaultStrategy{},
-			nodeCreator: creator}
+		return &Node{
+			Component:       component,
+			Nodes:           []*Node{},
+			logger:          logger,
+			shutdownTimeout: cfg.shutdownTimeout,
+			nodeCreator:     creator,
+		}
 	}
 	return creator
 }
@@ -72,14 +82,15 @@ func (n *Node) asNode(component Component) *Node {
 	return n.nodeCreator(component)
 }
 
+// Shutdown tears down this node's subtree directly, without going through
+// Run. Children are shut down before the node itself; every child is
+// visited and every error is joined, even if an earlier child fails.
 func (n *Node) Shutdown(ctx context.Context) error {
-	for _, node := range n.Nodes {
-		err := node.Shutdown(ctx)
-		if err != nil {
-			return err
-		}
+	var err error
+	for _, child := range n.Nodes {
+		err = errors.Join(err, child.Shutdown(ctx))
 	}
-	return n.Component.Shutdown(ctx)
+	return errors.Join(err, n.Component.Shutdown(ctx))
 }
 
 func (n *Node) Name() string {
@@ -98,5 +109,5 @@ func (n *Node) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return n.strategy.Process(ctx, n)
+	return process(ctx, n)
 }
