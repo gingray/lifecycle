@@ -1,5 +1,6 @@
 package lifecycle
 
+// Logger is the logging interface lifecycle writes to. *slog.Logger satisfies it.
 type Logger interface {
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
@@ -10,6 +11,11 @@ type Logger interface {
 // whenever a Node is created without a logger.
 type NopLogger struct{}
 
-func (NopLogger) Info(msg string, args ...any)  {}
-func (NopLogger) Warn(msg string, args ...any)  {}
-func (NopLogger) Error(msg string, args ...any) {}
+// Info discards the message.
+func (NopLogger) Info(string, ...any) {}
+
+// Warn discards the message.
+func (NopLogger) Warn(string, ...any) {}
+
+// Error discards the message.
+func (NopLogger) Error(string, ...any) {}

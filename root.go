@@ -7,21 +7,24 @@ import (
 	"syscall"
 )
 
+// RootComponent sits at the top of a tree. It stops when one of its signals arrives or its ctx is cancelled.
 type RootComponent struct {
 	BaseComponent
 	signals []os.Signal
 }
 
+// Name returns "root".
 func (r *RootComponent) Name() string {
 	return "root"
 }
 
+// Run blocks until a signal arrives or ctx is cancelled. Both are a clean stop, so it returns nil.
 func (r *RootComponent) Run(ctx context.Context) error {
 	ctx, stop := signal.NotifyContext(ctx, r.signals...)
 	defer stop()
 
 	<-ctx.Done()
-	return ctx.Err()
+	return nil
 }
 
 // NewRootComponent creates a RootComponent that triggers shutdown on the
