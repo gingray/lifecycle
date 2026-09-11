@@ -23,11 +23,11 @@ const (
 // GetNodeCreator and attach children with Then and its variants. A node must have exactly one parent:
 // adding the same node under two parents runs it twice.
 type Node struct {
-	Component       Component
+	Component       C
 	Nodes           []*Node
 	logger          Logger
 	shutdownTimeout time.Duration
-	nodeCreator     func(component Component) *Node
+	nodeCreator     func(component C) *Node
 }
 
 // DefaultRoot returns a root node that stops the whole tree on os.Interrupt or syscall.SIGTERM (see WithSignals),
@@ -40,17 +40,17 @@ func DefaultRoot(logger Logger, opts ...Option) *Node {
 
 // GetNodeCreator returns a function that wraps components in nodes sharing logger and opts, for building a tree
 // without the default root. A nil logger means NopLogger.
-func GetNodeCreator(logger Logger, opts ...Option) func(component Component) *Node {
+func GetNodeCreator(logger Logger, opts ...Option) func(component C) *Node {
 	return newNodeCreator(logger, newConfig(opts))
 }
 
-func newNodeCreator(logger Logger, cfg *config) func(component Component) *Node {
+func newNodeCreator(logger Logger, cfg *config) func(component C) *Node {
 	if logger == nil {
 		logger = NopLogger{}
 	}
 
-	var creator func(component Component) *Node
-	creator = func(component Component) *Node {
+	var creator func(component C) *Node
+	creator = func(component C) *Node {
 		return &Node{
 			Component:       component,
 			Nodes:           []*Node{},
@@ -62,8 +62,8 @@ func newNodeCreator(logger Logger, cfg *config) func(component Component) *Node 
 	return creator
 }
 
-// Then attaches components as children. A *Node is attached as-is; any other Component is wrapped in a new node.
-func (n *Node) Then(component ...Component) {
+// Then attaches components as children. A *Node is attached as-is; any other C is wrapped in a new node.
+func (n *Node) Then(component ...C) {
 	for _, item := range component {
 		switch c := item.(type) {
 		case *Node:
@@ -76,7 +76,7 @@ func (n *Node) Then(component ...Component) {
 
 // ThenLast attaches components as children and returns the node for the last of them.
 // It panics if no components are given.
-func (n *Node) ThenLast(component ...Component) *Node {
+func (n *Node) ThenLast(component ...C) *Node {
 	requirePosition("ThenLast", 1, component)
 	n.Then(component...)
 	return n.Nodes[len(n.Nodes)-1]
@@ -84,7 +84,7 @@ func (n *Node) ThenLast(component ...Component) *Node {
 
 // ThenFirst attaches components as children and returns the node for the first of them.
 // It panics if no components are given.
-func (n *Node) ThenFirst(component ...Component) *Node {
+func (n *Node) ThenFirst(component ...C) *Node {
 	requirePosition("ThenFirst", 1, component)
 	start := len(n.Nodes)
 	n.Then(component...)
@@ -93,14 +93,14 @@ func (n *Node) ThenFirst(component ...Component) *Node {
 
 // ThenNth attaches components as children and returns the node for the nth of them, counting from 1.
 // It panics if nth is out of range for the components given.
-func (n *Node) ThenNth(nth int, component ...Component) *Node {
+func (n *Node) ThenNth(nth int, component ...C) *Node {
 	requirePosition("ThenNth", nth, component)
 	start := len(n.Nodes)
 	n.Then(component...)
 	return n.Nodes[start+nth-1]
 }
 
-func requirePosition(method string, position int, components []Component) {
+func requirePosition(method string, position int, components []C) {
 	if position < 1 || position > len(components) {
 		panic(fmt.Sprintf("lifecycle: %s: position %d is out of range for %d component(s)", method, position, len(components)))
 	}

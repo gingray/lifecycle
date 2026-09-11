@@ -256,7 +256,7 @@ func TestPanicInRunIsReturnedAndTreeShutsDown(t *testing.T) {
 
 func TestFailingShutdownHandlerDoesNotCancelOthers(t *testing.T) {
 	failed := make(chan struct{})
-	component := &BaseComponent{}
+	component := &Component{}
 	component.AddShutdownHandler(func(_ context.Context) error {
 		close(failed)
 		return errors.New("boom")
@@ -277,7 +277,7 @@ func TestFailingShutdownHandlerDoesNotCancelOthers(t *testing.T) {
 }
 
 func TestHandlerErrorNotDuplicated(t *testing.T) {
-	component := &BaseComponent{}
+	component := &Component{}
 	component.AddReadyHandler(func(_ context.Context) error { return errors.New("boom") })
 
 	err := component.Ready(context.Background())
