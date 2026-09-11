@@ -9,7 +9,7 @@ import (
 
 // RootComponent sits at the top of a tree. It stops when one of its signals arrives or its ctx is cancelled.
 type RootComponent struct {
-	BaseComponent
+	Component
 	signals []os.Signal
 }
 

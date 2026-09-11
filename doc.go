@@ -6,10 +6,13 @@
 // shared dependencies outlive the components that use them. Each node must have
 // exactly one parent.
 //
-// Shutdown of the whole tree begins when the root receives a signal, the ctx
-// passed to Run is cancelled, any Ready or Run fails or panics, or any
-// component's Run returns. Run must therefore return once its ctx is cancelled:
-// a component's Shutdown isn't called until its Run has returned.
+// The whole tree stops when the root receives a signal, the ctx passed to Run
+// is cancelled, or any Ready or Run fails or panics. A Run that returns nil
+// stops only its own subtree, since its children depend on it; once a node's
+// last child has returned, the node stops too, so a tree whose work is done
+// exits on its own. Run must return once its ctx is cancelled, because a
+// component's Shutdown isn't called until its Run has returned, and it should
+// return nil only when its work is actually done.
 //
 // Node.Run returns nil on a clean stop, and otherwise every failure joined, each
 // wrapped with the name of the component that failed.

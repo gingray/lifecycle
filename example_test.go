@@ -11,7 +11,7 @@ import (
 )
 
 type httpServer struct {
-	lifecycle.BaseComponent
+	lifecycle.Component
 	server   *http.Server
 	listener net.Listener
 }

@@ -170,6 +170,74 @@ func TestRunReturningFromComponentWithChildrenStopsTree(t *testing.T) {
 	assert.Equal(t, 1, count(events, "shutdown:child"))
 }
 
+func TestCleanChildReturnKeepsSiblingsAndParentRunning(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil)
+	root.ThenLast(&fakeComponent{name: "parent", recorder: rec, blockRun: true}).
+		Then(
+			&fakeComponent{name: "a", recorder: rec},
+			&fakeComponent{name: "b", recorder: rec, blockRun: true},
+		)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := startRun(ctx, root)
+	require.Eventually(t, func() bool {
+		events := rec.snapshot()
+		return slices.Contains(events, "shutdown:a") && slices.Contains(events, "run:b") && slices.Contains(events, "run:parent")
+	}, time.Second, time.Millisecond)
+	assert.Never(t, func() bool {
+		events := rec.snapshot()
+		return slices.Contains(events, "shutdown:b") || slices.Contains(events, "shutdown:parent")
+	}, 50*time.Millisecond, time.Millisecond, "b and parent must keep running after a finishes cleanly")
+	cancel()
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	events := rec.snapshot()
+	assert.Equal(t, 1, count(events, "shutdown:b"))
+	assert.Equal(t, 1, count(events, "shutdown:parent"))
+	assert.Less(t, slices.Index(events, "shutdown:b"), slices.Index(events, "shutdown:parent"), "child must shut down before parent")
+}
+
+func TestAllChildrenFinishingStopsParent(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil)
+	root.ThenLast(&fakeComponent{name: "parent", recorder: rec, blockRun: true}).
+		Then(
+			&fakeComponent{name: "a", recorder: rec},
+			&fakeComponent{name: "b", recorder: rec},
+		)
+
+	err := waitFor(t, startRun(context.Background(), root))
+
+	assert.NoError(t, err)
+	events := rec.snapshot()
+	assert.Equal(t, 1, count(events, "shutdown:a"))
+	assert.Equal(t, 1, count(events, "shutdown:b"))
+	assert.Equal(t, 1, count(events, "shutdown:parent"))
+	assert.Less(t, slices.Index(events, "shutdown:a"), slices.Index(events, "shutdown:parent"), "child must shut down before parent")
+	assert.Less(t, slices.Index(events, "shutdown:b"), slices.Index(events, "shutdown:parent"), "child must shut down before parent")
+}
+
+func TestNestedChildErrorStopsWholeTree(t *testing.T) {
+	boom := errors.New("boom")
+	rec := &recorder{}
+	root := DefaultRoot(nil)
+	root.ThenLast(&fakeComponent{name: "parent", recorder: rec, blockRun: true}).
+		Then(&fakeComponent{name: "child", recorder: rec, runErr: boom})
+	root.Then(&fakeComponent{name: "sibling", recorder: rec, blockRun: true})
+
+	err := waitFor(t, startRun(context.Background(), root))
+
+	assert.ErrorIs(t, err, boom)
+	assert.ErrorContains(t, err, "component child: run: boom")
+	events := rec.snapshot()
+	for _, name := range []string{"child", "parent", "sibling"} {
+		assert.Equal(t, 1, count(events, "shutdown:"+name), name)
+	}
+}
+
 func TestPanicInRunIsReturnedAndTreeShutsDown(t *testing.T) {
 	rec := &recorder{}
 	root := DefaultRoot(nil)
@@ -188,7 +256,7 @@ func TestPanicInRunIsReturnedAndTreeShutsDown(t *testing.T) {
 
 func TestFailingShutdownHandlerDoesNotCancelOthers(t *testing.T) {
 	failed := make(chan struct{})
-	component := &BaseComponent{}
+	component := &Component{}
 	component.AddShutdownHandler(func(_ context.Context) error {
 		close(failed)
 		return errors.New("boom")
@@ -209,7 +277,7 @@ func TestFailingShutdownHandlerDoesNotCancelOthers(t *testing.T) {
 }
 
 func TestHandlerErrorNotDuplicated(t *testing.T) {
-	component := &BaseComponent{}
+	component := &Component{}
 	component.AddReadyHandler(func(_ context.Context) error { return errors.New("boom") })
 
 	err := component.Ready(context.Background())
