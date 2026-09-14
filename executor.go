@@ -18,9 +18,9 @@ const (
 	cancelOnError                     // the first error cancels the rest
 )
 
-// process runs the node's component and its children concurrently (see runNode), then shuts the node's component
+// nodeRunner runs the node's component and its children concurrently (see runNode), then shuts the node's component
 // down. Each child's Run shuts down its own subtree before returning, so children always stop before their parent.
-func process(ctx context.Context, node *Node) error {
+func nodeRunner(ctx context.Context, node *Node) error {
 	name := node.Component.Name()
 	parentFn := func(ctx context.Context) error {
 		node.logger.Info("supervisor", "status", RunStart, "component", name)
@@ -48,6 +48,13 @@ func process(ctx context.Context, node *Node) error {
 	node.logger.Info("supervisor", "status", ShutdownFinish, "component", name)
 
 	return joined
+}
+
+func rootNodeRunner(runner func(ctx context.Context, node *Node) error) func(context.Context, *Node) error {
+	return func(ctx context.Context, node *Node) error {
+		ctxWithValue := context.WithValue(ctx, PreShutdown, make(chan struct{}))
+		return runner(ctxWithValue, node)
+	}
 }
 
 // runNode runs parentFn and childFns concurrently and returns all of their errors joined. Children depend on the

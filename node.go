@@ -28,6 +28,7 @@ type Node struct {
 	logger          Logger
 	shutdownTimeout time.Duration
 	nodeCreator     func(component C) *Node
+	nodeRunner      func(ctx context.Context, n *Node) error
 }
 
 // DefaultRoot returns a root node that stops the whole tree on os.Interrupt or syscall.SIGTERM (see WithSignals),
@@ -35,6 +36,8 @@ type Node struct {
 func DefaultRoot(logger Logger, opts ...Option) *Node {
 	cfg := newConfig(opts)
 	creator := newNodeCreator(logger, cfg)
+	rootNode := creator(NewRootComponent(cfg.signals...))
+	rootNode.nodeRunner = rootNodeRunner(rootNode.nodeRunner)
 	return creator(NewRootComponent(cfg.signals...))
 }
 
@@ -57,9 +60,45 @@ func newNodeCreator(logger Logger, cfg *config) func(component C) *Node {
 			logger:          logger,
 			shutdownTimeout: cfg.shutdownTimeout,
 			nodeCreator:     creator,
+			nodeRunner:      nodeRunner,
 		}
 	}
 	return creator
+}
+
+// Ready runs this node's own readiness check, not its children's.
+func (n *Node) Ready(ctx context.Context) error {
+	return n.Component.Ready(ctx)
+}
+
+// Run checks Ready, then runs the component and its children concurrently until any of them returns or ctx is
+// cancelled, and shuts the subtree down bottom-up. It returns nil on a clean stop; otherwise every Ready, Run and
+// Shutdown failure joined, each wrapped with the component's name.
+func (n *Node) Run(ctx context.Context) error {
+	name := n.Component.Name()
+	n.logger.Info("supervisor", "status", ReadyCheckStart, "component", name)
+	err := safeCall(func() error { return n.Component.Ready(ctx) })
+	if stoppedByShutdown(ctx, err) {
+		return nil
+	}
+	if err != nil {
+		n.logger.Error("supervisor", "status", ReadyCheckFailed, "component", name, "error", err)
+		return fmt.Errorf("component %s: ready: %w", name, err)
+	}
+	n.logger.Info("supervisor", "status", ReadyCheckFinish, "component", name)
+
+	return n.nodeRunner(ctx, n)
+}
+
+// Shutdown tears down this node's subtree directly, without going through
+// Run. Children are shut down before the node itself; every child is
+// visited, and every error is joined, even if an earlier child fails.
+func (n *Node) Shutdown(ctx context.Context) error {
+	var err error
+	for _, child := range n.Nodes {
+		err = errors.Join(err, child.Shutdown(ctx))
+	}
+	return errors.Join(err, n.Component.Shutdown(ctx))
 }
 
 // Then attaches components as children. A *Node is attached as-is; any other C is wrapped in a new node.
@@ -106,42 +145,7 @@ func requirePosition(method string, position int, components []C) {
 	}
 }
 
-// Shutdown tears down this node's subtree directly, without going through
-// Run. Children are shut down before the node itself; every child is
-// visited, and every error is joined, even if an earlier child fails.
-func (n *Node) Shutdown(ctx context.Context) error {
-	var err error
-	for _, child := range n.Nodes {
-		err = errors.Join(err, child.Shutdown(ctx))
-	}
-	return errors.Join(err, n.Component.Shutdown(ctx))
-}
-
 // Name returns the component's name.
 func (n *Node) Name() string {
 	return n.Component.Name()
-}
-
-// Ready runs this node's own readiness check, not its children's.
-func (n *Node) Ready(ctx context.Context) error {
-	return n.Component.Ready(ctx)
-}
-
-// Run checks Ready, then runs the component and its children concurrently until any of them returns or ctx is
-// cancelled, and shuts the subtree down bottom-up. It returns nil on a clean stop; otherwise every Ready, Run and
-// Shutdown failure joined, each wrapped with the component's name.
-func (n *Node) Run(ctx context.Context) error {
-	name := n.Component.Name()
-	n.logger.Info("supervisor", "status", ReadyCheckStart, "component", name)
-	err := safeCall(func() error { return n.Component.Ready(ctx) })
-	if stoppedByShutdown(ctx, err) {
-		return nil
-	}
-	if err != nil {
-		n.logger.Error("supervisor", "status", ReadyCheckFailed, "component", name, "error", err)
-		return fmt.Errorf("component %s: ready: %w", name, err)
-	}
-	n.logger.Info("supervisor", "status", ReadyCheckFinish, "component", name)
-
-	return process(ctx, n)
 }

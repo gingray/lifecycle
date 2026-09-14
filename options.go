@@ -7,6 +7,7 @@ import (
 
 type config struct {
 	shutdownTimeout time.Duration
+	drainTimeout    time.Duration
 	signals         []os.Signal
 }
 
@@ -32,4 +33,8 @@ func WithShutdownTimeout(d time.Duration) Option {
 // os.Interrupt and syscall.SIGTERM when unset.
 func WithSignals(sig ...os.Signal) Option {
 	return func(c *config) { c.signals = sig }
+}
+
+func WithDrainTimeout(d time.Duration) Option {
+	return func(c *config) { c.drainTimeout = d }
 }

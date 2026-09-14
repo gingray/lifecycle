@@ -5,13 +5,22 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // RootComponent sits at the top of a tree. It stops when one of its signals arrives or its ctx is cancelled.
 type RootComponent struct {
 	Component
-	signals []os.Signal
+	signals      []os.Signal
+	drainTimeout time.Duration
+	preshutdown  chan struct{}
 }
+
+type preshutdown string
+
+const (
+	PreShutdown = preshutdown("preshutdown")
+)
 
 // Name returns "root".
 func (r *RootComponent) Name() string {
@@ -24,6 +33,10 @@ func (r *RootComponent) Run(ctx context.Context) error {
 	defer stop()
 
 	<-ctx.Done()
+	if r.drainTimeout > 0 {
+		close(r.preshutdown)
+		time.Sleep(r.drainTimeout)
+	}
 	return nil
 }
 
@@ -31,8 +44,11 @@ func (r *RootComponent) Run(ctx context.Context) error {
 // given signals, defaulting to os.Interrupt and syscall.SIGTERM when none
 // are given.
 func NewRootComponent(signals ...os.Signal) *RootComponent {
-	if len(signals) == 0 {
-		signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+	root := &RootComponent{}
+	root.signals = signals
+	if len(root.signals) <= 0 {
+		root.signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+
 	}
-	return &RootComponent{signals: signals}
+	return root
 }
