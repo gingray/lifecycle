@@ -21,7 +21,13 @@ func (s *httpServer) Name() string { return "http-server" }
 func (s *httpServer) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.server.Serve(s.listener) }()
-
+	go func(ctx context.Context) {
+		ch := ctx.Value(lifecycle.PreShutdown)
+		if ch != nil {
+			<-ch.(chan struct{})
+			fmt.Println("pre-shutdown message catch")
+		}
+	}(ctx)
 	select {
 	case err := <-errCh:
 		return err
@@ -41,11 +47,11 @@ func ExampleDefaultRoot() {
 		return
 	}
 
-	root := lifecycle.DefaultRoot(nil, lifecycle.WithShutdownTimeout(5*time.Second))
+	root := lifecycle.DefaultRoot(nil, lifecycle.WithShutdownTimeout(5*time.Second), lifecycle.WithDrainTimeout(100*time.Millisecond))
 	root.Then(&httpServer{server: &http.Server{ReadHeaderTimeout: time.Second}, listener: listener})
 
 	// The timeout stands in for SIGTERM: either one stops the tree cleanly.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 1000*time.Millisecond)
 	defer cancel()
 
 	if err := root.Run(ctx); err != nil {
@@ -53,5 +59,6 @@ func ExampleDefaultRoot() {
 		return
 	}
 	fmt.Println("stopped cleanly")
-	// Output: stopped cleanly
+	// Output: pre-shutdown message catch
+	// stopped cleanly
 }

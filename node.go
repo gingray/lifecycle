@@ -36,9 +36,9 @@ type Node struct {
 func DefaultRoot(logger Logger, opts ...Option) *Node {
 	cfg := newConfig(opts)
 	creator := newNodeCreator(logger, cfg)
-	rootNode := creator(NewRootComponent(cfg.signals...))
+	rootNode := creator(NewRootComponent(cfg))
 	rootNode.nodeRunner = rootNodeRunner(rootNode.nodeRunner)
-	return creator(NewRootComponent(cfg.signals...))
+	return rootNode
 }
 
 // GetNodeCreator returns a function that wraps components in nodes sharing logger and opts, for building a tree

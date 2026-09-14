@@ -13,7 +13,6 @@ type RootComponent struct {
 	Component
 	signals      []os.Signal
 	drainTimeout time.Duration
-	preshutdown  chan struct{}
 }
 
 type preshutdown string
@@ -34,7 +33,10 @@ func (r *RootComponent) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	if r.drainTimeout > 0 {
-		close(r.preshutdown)
+		preshutdownCh := ctx.Value(PreShutdown)
+		if preshutdownCh != nil {
+			close(preshutdownCh.(chan struct{}))
+		}
 		time.Sleep(r.drainTimeout)
 	}
 	return nil
@@ -43,12 +45,12 @@ func (r *RootComponent) Run(ctx context.Context) error {
 // NewRootComponent creates a RootComponent that triggers shutdown on the
 // given signals, defaulting to os.Interrupt and syscall.SIGTERM when none
 // are given.
-func NewRootComponent(signals ...os.Signal) *RootComponent {
+func NewRootComponent(cfg *config) *RootComponent {
 	root := &RootComponent{}
-	root.signals = signals
+	root.signals = cfg.signals
+	root.drainTimeout = cfg.drainTimeout
 	if len(root.signals) <= 0 {
 		root.signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
-
 	}
 	return root
 }
