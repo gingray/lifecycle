@@ -32,11 +32,13 @@ type Node struct {
 }
 
 // DefaultRoot returns a root node that stops the whole tree on os.Interrupt or syscall.SIGTERM (see WithSignals),
-// or when the ctx passed to Run is cancelled. A nil logger means NopLogger.
+// or when the ctx passed to Run is cancelled. Either way the root first closes the channel returned by
+// PreShutdownDone and waits out the drain window set with WithDrainTimeout before cancelling the components below
+// it. A nil logger means NopLogger.
 func DefaultRoot(logger Logger, opts ...Option) *Node {
 	cfg := newConfig(opts)
 	creator := newNodeCreator(logger, cfg)
-	rootNode := creator(NewRootComponent(cfg))
+	rootNode := creator(newRootComponent(cfg))
 	rootNode.nodeRunner = rootNodeRunner(rootNode.nodeRunner)
 	return rootNode
 }

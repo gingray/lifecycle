@@ -11,6 +11,7 @@ Modern services are rarely a single loop — an HTTP server, a background schedu
 - **Concurrent by default** — sibling components run and shut down concurrently, so independent parts of your app aren't held up by one another.
 - **Predictable stopping** — a failure anywhere stops the whole app, while a component that finishes cleanly stops only what depends on it, so a tree whose work is done exits on its own. See [Execution model](#execution-model).
 - **Signal-aware root** — `DefaultRoot` wires up `SIGINT`/`SIGTERM` handling out of the box (overridable via `WithSignals`), triggering an orderly shutdown of the whole tree.
+- **Drain window** — components can learn that the app has been asked to stop *before* anything is cancelled, via `PreShutdownDone(ctx)`, and `WithDrainTimeout` keeps the tree running long enough for them to finish in-flight work or fail their readiness probe. See [Draining before shutdown](#draining-before-shutdown).
 - **Bounded shutdown** — optionally give each component's `Shutdown` a deadline with `WithShutdownTimeout`, independent of how long the app was running.
 - **Clear results** — `Run` returns `nil` on a clean stop; failures, including panics, come back wrapped with the failing component's name.
 - **Pluggable logging** — bring your own logger via a minimal `Logger` interface (`*slog.Logger` works as-is), or omit it entirely (defaults to a no-op `NopLogger`).
@@ -129,8 +130,8 @@ Each node runs its own component's `Run` and all of its children's subtrees conc
 
 | Trigger | What stops | Reported as |
 |---|---|---|
-| The root receives `SIGINT`/`SIGTERM` (or a signal set with `WithSignals`) | The whole tree | Clean stop: `root.Run` returns `nil` |
-| The `ctx` passed to `root.Run` is cancelled | The whole tree | Clean stop: `root.Run` returns `nil` |
+| The root receives `SIGINT`/`SIGTERM` (or a signal set with `WithSignals`) | The whole tree, after the [drain window](#draining-before-shutdown) | Clean stop: `root.Run` returns `nil` |
+| The `ctx` passed to `root.Run` is cancelled | The whole tree, after the [drain window](#draining-before-shutdown) | Clean stop: `root.Run` returns `nil` |
 | A component's `Ready` returns an error or panics | The whole tree. That component's `Run` and its children never start | `component <name>: ready: <err>` |
 | A component's `Run` returns an error or panics | The whole tree | `component <name>: run: <err>` |
 | A component's `Shutdown` returns an error or panics | Everything still running, since this is a failure too | `component <name>: shutdown: <err>` |
@@ -151,7 +152,7 @@ root
     └── cache-warmup   (one-shot: returns nil once the cache is warm)
 ```
 
-- **`SIGTERM` arrives:** the root cancels its context. `http-server`, `scheduler`, and `cache-warmup` (if it's still running) stop and shut down concurrently. Then `db` shuts down, then the root. `root.Run` returns `nil`.
+- **`SIGTERM` arrives:** the root closes the `PreShutdownDone` channel, waits out the drain window if one is set, then cancels its context. `http-server`, `scheduler`, and `cache-warmup` (if it's still running) stop and shut down concurrently. Then `db` shuts down, then the root. `root.Run` returns `nil`.
 - **`cache-warmup` finishes:** `cache-warmup` shuts down. `http-server`, `scheduler`, and `db` keep running.
 - **`scheduler`'s `Run` returns an error:** `http-server`, `cache-warmup`, and `db` are cancelled. The children shut down first, then `db`, then the root. `root.Run` returns `component scheduler: run: <err>`.
 - **`db`'s `Run` returns an error** (e.g. the connection is lost): its children are cancelled and shut down first, then `db`. The error then stops the rest of the tree, and `root.Run` returns `component db: run: <err>`. If `db` returned `nil` instead, the same components would stop, and since `db` is the root's only child, the app would exit with `nil`.
@@ -170,6 +171,39 @@ root
 - Return an error when the component can no longer do its job. Returning `nil` early from a long-running component (for example, treating a server stopping unexpectedly as success) makes it stop quietly while the rest of the app keeps running.
 - Return `nil` only when the work is actually done, like a migration or a warm-up job.
 
+## Draining before shutdown
+
+Cancelling a component is abrupt: an HTTP server stops accepting connections, a consumer stops mid-batch. Often you want a moment between "the app has been asked to stop" and "components are cancelled", so a server can start failing its readiness probe while the load balancer still sends traffic, or a worker can finish the messages it already holds.
+
+`DefaultRoot` gives every component that moment. When a signal arrives or the `ctx` passed to `root.Run` is cancelled, the root first closes the channel returned by `lifecycle.PreShutdownDone(ctx)`, then keeps the whole tree running for the duration set with `WithDrainTimeout`, and only then cancels the components. The wait ends early if every component finishes on its own. Without `WithDrainTimeout` the channel is still closed, but the tree is cancelled right away.
+
+```go
+func (s *HTTPServer) Run(ctx context.Context) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.server.ListenAndServe() }()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-lifecycle.PreShutdownDone(ctx):
+		s.ready.Store(false) // the readiness handler now returns 503; traffic drains away
+	case <-ctx.Done():
+		return nil
+	}
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return nil
+	}
+}
+```
+
+`PreShutdownDone` returns `nil` for a `ctx` that doesn't come from a `DefaultRoot` tree, and receiving from a `nil` channel blocks forever, so always select on `ctx.Done()` alongside it, as above. Draining is optional: a component that ignores the channel simply gets cancelled when the window closes. The root itself has nothing to drain; it only opens the window for the components below it.
+
+A failure anywhere still stops the tree immediately: the drain window only applies to a requested stop, not to a crash.
+
 ## Configuration
 
 `DefaultRoot` (and `GetNodeCreator`) accept functional options:
@@ -178,10 +212,13 @@ root
 root := lifecycle.DefaultRoot(logger,
 	lifecycle.WithShutdownTimeout(30*time.Second), // deadline for each component's Shutdown; unset means none
 	lifecycle.WithSignals(syscall.SIGTERM),         // override the default os.Interrupt + syscall.SIGTERM
+	lifecycle.WithDrainTimeout(10*time.Second),    // keep the tree running this long after a stop is requested; unset means no drain window
 )
 ```
 
 The shutdown timeout applies to each component separately, not the whole tree: a parent's timeout starts only after its children have finished, so total shutdown time can exceed it. It's delivered as a `ctx` deadline, so it only takes effect if `Shutdown` respects `ctx`.
+
+The drain timeout is a single window for the whole tree, measured from the moment the stop was requested. `WithSignals` and `WithDrainTimeout` only take effect on the root, so they are meaningful only when passed to `DefaultRoot` or `NewRootComponent`.
 
 ## Testing
 
