@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"syscall"
 	"time"
 
 	"github.com/gingray/lifecycle"
@@ -52,14 +54,18 @@ func ExampleDefaultRoot() {
 		return
 	}
 
-	root := lifecycle.DefaultRoot(nil, lifecycle.WithShutdownTimeout(5*time.Second), lifecycle.WithDrainTimeout(100*time.Millisecond))
+	// SIGUSR1 stands in for SIGTERM so the example can signal itself. Only a signal opens the drain window;
+	// cancelling ctx would stop the tree at once.
+	root := lifecycle.DefaultRoot(nil,
+		lifecycle.WithSignals(syscall.SIGUSR1),
+		lifecycle.WithShutdownTimeout(5*time.Second),
+		lifecycle.WithDrainTimeout(100*time.Millisecond),
+	)
 	root.Then(&httpServer{server: &http.Server{ReadHeaderTimeout: time.Second}, listener: listener})
 
-	// The timeout stands in for SIGTERM: either one opens the drain window, then stops the tree cleanly.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	time.AfterFunc(50*time.Millisecond, func() { _ = syscall.Kill(os.Getpid(), syscall.SIGUSR1) })
 
-	if err := root.Run(ctx); err != nil {
+	if err := root.Run(context.Background()); err != nil {
 		fmt.Println("stopped with error:", err)
 		return
 	}

@@ -50,11 +50,9 @@ func nodeRunner(ctx context.Context, node *Node) error {
 	return joined
 }
 
-// rootNodeRunner wraps runner for the root node. It detaches the tree from the caller's ctx cancellation, keeping
-// its values, and hands the caller's ctx to the root component instead, so that cancelling it stops the root the
-// same way a signal does: the root closes the drain channel, waits out the drain window, and only then returns,
-// which cancels the children. Without the detachment the children would be cancelled at the same instant as the
-// root, leaving no drain window at all.
+// rootNodeRunner wraps runner for the root node, adding the drain channel that PreShutdownDone reads to the ctx
+// the whole tree runs under. The tree stays attached to the caller's ctx: cancelling it cancels the root and the
+// children together, so only a signal, which the root alone sees, gives the children a drain window.
 func rootNodeRunner(runner func(ctx context.Context, node *Node) error) func(context.Context, *Node) error {
 	return func(ctx context.Context, node *Node) error {
 		ctx = context.WithValue(ctx, preShutdownKey{}, make(chan struct{}))

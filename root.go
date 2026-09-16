@@ -18,11 +18,14 @@ type RootComponent struct {
 // preShutdownKey is the ctx key under which the drain channel travels down the tree.
 type preShutdownKey struct{}
 
-type stopContextKey struct{}
-
-// PreShutdownDone returns a channel that is closed as soon as the tree has been asked to stop, before any component
-// is cancelled, so a component can drain in-flight work, fail its readiness probe, or stop accepting new work while
+// PreShutdownDone returns a channel that is closed when the root receives a stop signal, before any component is
+// cancelled, so a component can drain in-flight work, fail its readiness probe, or stop accepting new work while
 // the rest of the tree keeps running. How long the tree keeps running after that is set with WithDrainTimeout.
+//
+// Only a signal opens that window. Cancelling the ctx passed to the root's Run is deliberately an immediate stop:
+// the channel is closed too, but every component is cancelled at the same instant, with no drain even when a
+// drain timeout is set. Run the root under context.Background() so every stop goes through the signal path, and
+// cancel the ctx yourself only when the app must stop right now and draining is not an option.
 //
 // The channel is only available under a root built with DefaultRoot. For any other ctx the result is nil, and a
 // receive on it blocks forever, so always select on ctx.Done() as well.
@@ -36,10 +39,10 @@ func (r *RootComponent) Name() string {
 	return "root"
 }
 
-// Run blocks until a signal arrives, the caller's ctx is cancelled, or ctx itself is cancelled because the tree
-// below has stopped on its own. It then closes the channel returned by PreShutdownDone and, if a drain timeout is
-// set, waits for it before returning. The wait ends early when the tree stops on its own. All of these are a clean
-// stop, so it returns nil.
+// Run blocks until a signal arrives or ctx is cancelled, then closes the channel returned by PreShutdownDone. After
+// a signal it also waits out the drain timeout, if one is set, before returning; the children keep running until it
+// does. The wait ends as soon as ctx is cancelled, which is how the tree reports that it stopped on its own, so a
+// cancelled ctx never waits. Both are a clean stop, so it returns nil.
 func (r *RootComponent) Run(ctx context.Context) error {
 	sigCtx, stop := signal.NotifyContext(ctx, r.signals...)
 	defer stop()

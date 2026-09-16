@@ -7,15 +7,15 @@
 // exactly one parent.
 //
 // The whole tree stops when the root receives a signal, the ctx passed to Run
-// is cancelled, or any Ready or Run fails or panics. A requested stop first
-// closes the channel returned by PreShutdownDone and, with WithDrainTimeout,
-// keeps the tree running for a while so components can drain before they are
-// cancelled; see DefaultRoot. A Run that returns nil stops only its own
-// subtree, since its children depend on it; once a node's last child has
-// returned, the node stops too, so a tree whose work is done exits on its own.
-// Run must return once its ctx is cancelled, because a component's Shutdown
-// isn't called until its Run has returned, and it should return nil only when
-// its work is actually done.
+// is cancelled, or any Ready or Run fails or panics. A signal first closes the
+// channel returned by PreShutdownDone and, with WithDrainTimeout, keeps the
+// tree running for a while so components can drain before they are cancelled;
+// a cancelled ctx stops everything at once. See DefaultRoot. A Run that
+// returns nil stops only its own subtree, since its children depend on it;
+// once a node's last child has returned, the node stops too, so a tree whose
+// work is done exits on its own. Run must return once its ctx is cancelled,
+// because a component's Shutdown isn't called until its Run has returned, and
+// it should return nil only when its work is actually done.
 //
 // Node.Run returns nil on a clean stop, and otherwise every failure joined, each
 // wrapped with the name of the component that failed.

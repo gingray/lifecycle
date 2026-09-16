@@ -382,42 +382,54 @@ func TestSignalOpensDrainWindowBeforeCancellingChildren(t *testing.T) {
 	assert.Equal(t, []string{"run:child", "drain:child", "cancel:child", "shutdown:child"}, events)
 }
 
-func TestCancelledContextOpensDrainWindowBeforeCancellingChildren(t *testing.T) {
+func TestCancelledContextStopsAtOnceWithoutDrainWindow(t *testing.T) {
 	rec := &recorder{}
 	child := &drainComponent{name: "child", recorder: rec}
-	root := DefaultRoot(nil, WithDrainTimeout(100*time.Millisecond))
+	root := DefaultRoot(nil, WithDrainTimeout(5*time.Second))
 	root.Then(child)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	done := startRun(ctx, root)
 	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:child") }, time.Second, time.Millisecond)
+	start := time.Now()
 	cancel()
-	require.Eventually(t, child.drained.Load, time.Second, time.Millisecond)
-	assert.Never(t, func() bool { return slices.Contains(rec.snapshot(), "cancel:child") }, 50*time.Millisecond, time.Millisecond,
-		"child must keep running during the drain window")
 	err := waitFor(t, done)
 
 	assert.NoError(t, err)
-	events := rec.snapshot()
-	assert.Equal(t, []string{"run:child", "drain:child", "cancel:child", "shutdown:child"}, events)
+	assert.Less(t, time.Since(start), time.Second, "a cancelled ctx must not wait out the drain timeout")
+	assert.Equal(t, 1, count(rec.snapshot(), "shutdown:child"))
 }
 
 func TestZeroDrainTimeoutStillClosesDrainChannel(t *testing.T) {
 	rec := &recorder{}
 	child := &drainComponent{name: "child", recorder: rec}
-	root := DefaultRoot(nil)
+	root := DefaultRoot(nil, WithSignals(syscall.SIGUSR1))
 	root.Then(child)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
-	done := startRun(ctx, root)
+	done := startRun(context.Background(), root)
 	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:child") }, time.Second, time.Millisecond)
-	cancel()
+	sendSignal(t, syscall.SIGUSR1)
 	err := waitFor(t, done)
 
 	assert.NoError(t, err)
 	assert.True(t, child.drained.Load(), "the drain channel must be closed even without a drain window")
+}
+
+func TestDrainWindowEndsEarlyWhenChildrenFinish(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil, WithSignals(syscall.SIGUSR1), WithDrainTimeout(5*time.Second))
+	root.Then(&drainComponent{name: "a", recorder: rec, finishOnDrain: true})
+
+	done := startRun(context.Background(), root)
+	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:a") }, time.Second, time.Millisecond)
+	start := time.Now()
+	sendSignal(t, syscall.SIGUSR1)
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	assert.Less(t, time.Since(start), time.Second, "the root must return as soon as its last child finishes")
+	assert.Equal(t, []string{"run:a", "drain:a", "shutdown:a"}, rec.snapshot())
 }
 
 func TestDrainWindowDoesNotDelayChildFailure(t *testing.T) {
