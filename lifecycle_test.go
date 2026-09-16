@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -170,6 +173,74 @@ func TestRunReturningFromComponentWithChildrenStopsTree(t *testing.T) {
 	assert.Equal(t, 1, count(events, "shutdown:child"))
 }
 
+func TestCleanChildReturnKeepsSiblingsAndParentRunning(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil)
+	root.ThenLast(&fakeComponent{name: "parent", recorder: rec, blockRun: true}).
+		Then(
+			&fakeComponent{name: "a", recorder: rec},
+			&fakeComponent{name: "b", recorder: rec, blockRun: true},
+		)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := startRun(ctx, root)
+	require.Eventually(t, func() bool {
+		events := rec.snapshot()
+		return slices.Contains(events, "shutdown:a") && slices.Contains(events, "run:b") && slices.Contains(events, "run:parent")
+	}, time.Second, time.Millisecond)
+	assert.Never(t, func() bool {
+		events := rec.snapshot()
+		return slices.Contains(events, "shutdown:b") || slices.Contains(events, "shutdown:parent")
+	}, 50*time.Millisecond, time.Millisecond, "b and parent must keep running after a finishes cleanly")
+	cancel()
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	events := rec.snapshot()
+	assert.Equal(t, 1, count(events, "shutdown:b"))
+	assert.Equal(t, 1, count(events, "shutdown:parent"))
+	assert.Less(t, slices.Index(events, "shutdown:b"), slices.Index(events, "shutdown:parent"), "child must shut down before parent")
+}
+
+func TestAllChildrenFinishingStopsParent(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil)
+	root.ThenLast(&fakeComponent{name: "parent", recorder: rec, blockRun: true}).
+		Then(
+			&fakeComponent{name: "a", recorder: rec},
+			&fakeComponent{name: "b", recorder: rec},
+		)
+
+	err := waitFor(t, startRun(context.Background(), root))
+
+	assert.NoError(t, err)
+	events := rec.snapshot()
+	assert.Equal(t, 1, count(events, "shutdown:a"))
+	assert.Equal(t, 1, count(events, "shutdown:b"))
+	assert.Equal(t, 1, count(events, "shutdown:parent"))
+	assert.Less(t, slices.Index(events, "shutdown:a"), slices.Index(events, "shutdown:parent"), "child must shut down before parent")
+	assert.Less(t, slices.Index(events, "shutdown:b"), slices.Index(events, "shutdown:parent"), "child must shut down before parent")
+}
+
+func TestNestedChildErrorStopsWholeTree(t *testing.T) {
+	boom := errors.New("boom")
+	rec := &recorder{}
+	root := DefaultRoot(nil)
+	root.ThenLast(&fakeComponent{name: "parent", recorder: rec, blockRun: true}).
+		Then(&fakeComponent{name: "child", recorder: rec, runErr: boom})
+	root.Then(&fakeComponent{name: "sibling", recorder: rec, blockRun: true})
+
+	err := waitFor(t, startRun(context.Background(), root))
+
+	assert.ErrorIs(t, err, boom)
+	assert.ErrorContains(t, err, "component child: run: boom")
+	events := rec.snapshot()
+	for _, name := range []string{"child", "parent", "sibling"} {
+		assert.Equal(t, 1, count(events, "shutdown:"+name), name)
+	}
+}
+
 func TestPanicInRunIsReturnedAndTreeShutsDown(t *testing.T) {
 	rec := &recorder{}
 	root := DefaultRoot(nil)
@@ -188,7 +259,7 @@ func TestPanicInRunIsReturnedAndTreeShutsDown(t *testing.T) {
 
 func TestFailingShutdownHandlerDoesNotCancelOthers(t *testing.T) {
 	failed := make(chan struct{})
-	component := &BaseComponent{}
+	component := &Component{}
 	component.AddShutdownHandler(func(_ context.Context) error {
 		close(failed)
 		return errors.New("boom")
@@ -209,7 +280,7 @@ func TestFailingShutdownHandlerDoesNotCancelOthers(t *testing.T) {
 }
 
 func TestHandlerErrorNotDuplicated(t *testing.T) {
-	component := &BaseComponent{}
+	component := &Component{}
 	component.AddReadyHandler(func(_ context.Context) error { return errors.New("boom") })
 
 	err := component.Ready(context.Background())
@@ -253,4 +324,151 @@ func TestNilLoggerDoesNotPanic(t *testing.T) {
 	root.Then(&fakeComponent{name: "a", recorder: &recorder{}})
 
 	assert.NotPanics(t, func() { _ = root.Run(context.Background()) })
+}
+
+// drainComponent records when it saw the drain channel close and when it was cancelled.
+type drainComponent struct {
+	name          string
+	recorder      *recorder
+	finishOnDrain bool // return nil as soon as the drain channel closes, like a worker that drained its queue
+	drained       atomic.Bool
+}
+
+func (c *drainComponent) Name() string                  { return c.name }
+func (c *drainComponent) Ready(_ context.Context) error { return nil }
+func (c *drainComponent) Shutdown(_ context.Context) error {
+	c.recorder.record("shutdown:" + c.name)
+	return nil
+}
+
+func (c *drainComponent) Run(ctx context.Context) error {
+	c.recorder.record("run:" + c.name)
+	select {
+	case <-PreShutdownDone(ctx):
+		c.drained.Store(true)
+		c.recorder.record("drain:" + c.name)
+	case <-ctx.Done():
+		return nil
+	}
+	if c.finishOnDrain {
+		return nil
+	}
+	<-ctx.Done()
+	c.recorder.record("cancel:" + c.name)
+	return nil
+}
+
+func sendSignal(t *testing.T, sig syscall.Signal) {
+	t.Helper()
+	require.NoError(t, syscall.Kill(os.Getpid(), sig))
+}
+
+func TestSignalOpensDrainWindowBeforeCancellingChildren(t *testing.T) {
+	rec := &recorder{}
+	child := &drainComponent{name: "child", recorder: rec}
+	root := DefaultRoot(nil, WithSignals(syscall.SIGUSR1), WithDrainTimeout(100*time.Millisecond))
+	root.Then(child)
+
+	done := startRun(context.Background(), root)
+	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:child") }, time.Second, time.Millisecond)
+	sendSignal(t, syscall.SIGUSR1)
+	require.Eventually(t, child.drained.Load, time.Second, time.Millisecond)
+	assert.Never(t, func() bool { return slices.Contains(rec.snapshot(), "cancel:child") }, 50*time.Millisecond, time.Millisecond,
+		"child must keep running during the drain window")
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	events := rec.snapshot()
+	assert.Equal(t, []string{"run:child", "drain:child", "cancel:child", "shutdown:child"}, events)
+}
+
+func TestCancelledContextStopsAtOnceWithoutDrainWindow(t *testing.T) {
+	rec := &recorder{}
+	child := &drainComponent{name: "child", recorder: rec}
+	root := DefaultRoot(nil, WithDrainTimeout(5*time.Second))
+	root.Then(child)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := startRun(ctx, root)
+	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:child") }, time.Second, time.Millisecond)
+	start := time.Now()
+	cancel()
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	assert.Less(t, time.Since(start), time.Second, "a cancelled ctx must not wait out the drain timeout")
+	assert.Equal(t, 1, count(rec.snapshot(), "shutdown:child"))
+}
+
+func TestZeroDrainTimeoutStillClosesDrainChannel(t *testing.T) {
+	rec := &recorder{}
+	child := &drainComponent{name: "child", recorder: rec}
+	root := DefaultRoot(nil, WithSignals(syscall.SIGUSR1))
+	root.Then(child)
+
+	done := startRun(context.Background(), root)
+	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:child") }, time.Second, time.Millisecond)
+	sendSignal(t, syscall.SIGUSR1)
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	assert.True(t, child.drained.Load(), "the drain channel must be closed even without a drain window")
+}
+
+func TestDrainWindowEndsEarlyWhenChildrenFinish(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil, WithSignals(syscall.SIGUSR1), WithDrainTimeout(5*time.Second))
+	root.Then(&drainComponent{name: "a", recorder: rec, finishOnDrain: true})
+
+	done := startRun(context.Background(), root)
+	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:a") }, time.Second, time.Millisecond)
+	start := time.Now()
+	sendSignal(t, syscall.SIGUSR1)
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	assert.Less(t, time.Since(start), time.Second, "the root must return as soon as its last child finishes")
+	assert.Equal(t, []string{"run:a", "drain:a", "shutdown:a"}, rec.snapshot())
+}
+
+func TestDrainWindowDoesNotDelayChildFailure(t *testing.T) {
+	boom := errors.New("boom")
+	rec := &recorder{}
+	root := DefaultRoot(nil, WithDrainTimeout(5*time.Second))
+	root.Then(&fakeComponent{name: "b", recorder: rec, runErr: boom})
+
+	err := waitFor(t, startRun(context.Background(), root))
+
+	assert.ErrorIs(t, err, boom)
+}
+
+func TestDrainWindowDoesNotDelayTreeFinishingOnItsOwn(t *testing.T) {
+	rec := &recorder{}
+	root := DefaultRoot(nil, WithDrainTimeout(5*time.Second))
+	root.Then(&fakeComponent{name: "a", recorder: rec})
+
+	err := waitFor(t, startRun(context.Background(), root))
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1, count(rec.snapshot(), "shutdown:a"))
+}
+
+func TestPreShutdownDoneIsNilOutsideDefaultRoot(t *testing.T) {
+	assert.Nil(t, PreShutdownDone(context.Background()))
+}
+
+func TestNewRootComponentReadsOptions(t *testing.T) {
+	rec := &recorder{}
+	creator := GetNodeCreator(nil)
+	root := creator(NewRootComponent(WithSignals(syscall.SIGUSR1)))
+	root.Then(&fakeComponent{name: "a", recorder: rec, blockRun: true})
+
+	done := startRun(context.Background(), root)
+	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:a") }, time.Second, time.Millisecond)
+	sendSignal(t, syscall.SIGUSR1)
+	err := waitFor(t, done)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 1, count(rec.snapshot(), "shutdown:a"))
 }

@@ -7,6 +7,7 @@ import (
 
 type config struct {
 	shutdownTimeout time.Duration
+	drainTimeout    time.Duration
 	signals         []os.Signal
 }
 
@@ -32,4 +33,13 @@ func WithShutdownTimeout(d time.Duration) Option {
 // os.Interrupt and syscall.SIGTERM when unset.
 func WithSignals(sig ...os.Signal) Option {
 	return func(c *config) { c.signals = sig }
+}
+
+// WithDrainTimeout sets how long the root keeps the tree running after a stop signal, giving components that wait
+// on PreShutdownDone time to drain before they are cancelled. Only meaningful when passed to DefaultRoot, and only
+// for signals: cancelling the ctx passed to Run is the deliberate way to stop the tree at once, skipping the drain.
+// Unset means no drain window: the tree is cancelled right after the channel is closed. The wait ends early if
+// every component finishes on its own.
+func WithDrainTimeout(d time.Duration) Option {
+	return func(c *config) { c.drainTimeout = d }
 }

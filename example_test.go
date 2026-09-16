@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"syscall"
 	"time"
 
 	"github.com/gingray/lifecycle"
 )
 
 type httpServer struct {
-	lifecycle.BaseComponent
+	lifecycle.Component
 	server   *http.Server
 	listener net.Listener
 }
@@ -21,6 +23,17 @@ func (s *httpServer) Name() string { return "http-server" }
 func (s *httpServer) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.server.Serve(s.listener) }()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-lifecycle.PreShutdownDone(ctx):
+		// The app has been asked to stop, but nothing is cancelled yet: a real server would start failing its
+		// readiness probe here so the load balancer stops sending traffic during the drain window.
+		fmt.Println("draining")
+	case <-ctx.Done():
+		return nil
+	}
 
 	select {
 	case err := <-errCh:
@@ -41,17 +54,22 @@ func ExampleDefaultRoot() {
 		return
 	}
 
-	root := lifecycle.DefaultRoot(nil, lifecycle.WithShutdownTimeout(5*time.Second))
+	// SIGUSR1 stands in for SIGTERM so the example can signal itself. Only a signal opens the drain window;
+	// cancelling ctx would stop the tree at once.
+	root := lifecycle.DefaultRoot(nil,
+		lifecycle.WithSignals(syscall.SIGUSR1),
+		lifecycle.WithShutdownTimeout(5*time.Second),
+		lifecycle.WithDrainTimeout(100*time.Millisecond),
+	)
 	root.Then(&httpServer{server: &http.Server{ReadHeaderTimeout: time.Second}, listener: listener})
 
-	// The timeout stands in for SIGTERM: either one stops the tree cleanly.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	time.AfterFunc(50*time.Millisecond, func() { _ = syscall.Kill(os.Getpid(), syscall.SIGUSR1) })
 
-	if err := root.Run(ctx); err != nil {
+	if err := root.Run(context.Background()); err != nil {
 		fmt.Println("stopped with error:", err)
 		return
 	}
 	fmt.Println("stopped cleanly")
-	// Output: stopped cleanly
+	// Output: draining
+	// stopped cleanly
 }
