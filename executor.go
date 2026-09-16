@@ -57,10 +57,8 @@ func nodeRunner(ctx context.Context, node *Node) error {
 // root, leaving no drain window at all.
 func rootNodeRunner(runner func(ctx context.Context, node *Node) error) func(context.Context, *Node) error {
 	return func(ctx context.Context, node *Node) error {
-		treeCtx := context.WithoutCancel(ctx)
-		treeCtx = context.WithValue(treeCtx, stopContextKey{}, ctx)
-		treeCtx = context.WithValue(treeCtx, preShutdownKey{}, make(chan struct{}))
-		return runner(treeCtx, node)
+		ctx = context.WithValue(ctx, preShutdownKey{}, make(chan struct{}))
+		return runner(ctx, node)
 	}
 }
 

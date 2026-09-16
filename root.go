@@ -18,8 +18,6 @@ type RootComponent struct {
 // preShutdownKey is the ctx key under which the drain channel travels down the tree.
 type preShutdownKey struct{}
 
-// stopContextKey is the ctx key under which the root's runner passes the caller's ctx to the root component, so
-// the root can watch it after the rest of the tree has been detached from its cancellation.
 type stopContextKey struct{}
 
 // PreShutdownDone returns a channel that is closed as soon as the tree has been asked to stop, before any component
@@ -43,17 +41,10 @@ func (r *RootComponent) Name() string {
 // set, waits for it before returning. The wait ends early when the tree stops on its own. All of these are a clean
 // stop, so it returns nil.
 func (r *RootComponent) Run(ctx context.Context) error {
-	stopCtx := ctx
-	if outer, ok := ctx.Value(stopContextKey{}).(context.Context); ok {
-		stopCtx = outer
-	}
-	sigCtx, stop := signal.NotifyContext(stopCtx, r.signals...)
+	sigCtx, stop := signal.NotifyContext(ctx, r.signals...)
 	defer stop()
 
-	select {
-	case <-sigCtx.Done():
-	case <-ctx.Done():
-	}
+	<-sigCtx.Done()
 
 	if drain, ok := ctx.Value(preShutdownKey{}).(chan struct{}); ok {
 		close(drain)

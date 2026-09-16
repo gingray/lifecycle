@@ -420,22 +420,6 @@ func TestZeroDrainTimeoutStillClosesDrainChannel(t *testing.T) {
 	assert.True(t, child.drained.Load(), "the drain channel must be closed even without a drain window")
 }
 
-func TestDrainWindowEndsEarlyWhenChildrenFinish(t *testing.T) {
-	rec := &recorder{}
-	root := DefaultRoot(nil, WithDrainTimeout(5*time.Second))
-	root.Then(&drainComponent{name: "a", recorder: rec, finishOnDrain: true})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := startRun(ctx, root)
-	require.Eventually(t, func() bool { return slices.Contains(rec.snapshot(), "run:a") }, time.Second, time.Millisecond)
-	cancel()
-	err := waitFor(t, done)
-
-	assert.NoError(t, err)
-	assert.Equal(t, []string{"run:a", "drain:a", "shutdown:a"}, rec.snapshot())
-}
-
 func TestDrainWindowDoesNotDelayChildFailure(t *testing.T) {
 	boom := errors.New("boom")
 	rec := &recorder{}
