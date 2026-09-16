@@ -15,7 +15,7 @@ Modern services are rarely a single loop — an HTTP server, a background schedu
 - **Bounded shutdown** — optionally give each component's `Shutdown` a deadline with `WithShutdownTimeout`, independent of how long the app was running.
 - **Clear results** — `Run` returns `nil` on a clean stop; failures, including panics, come back wrapped with the failing component's name.
 - **Pluggable logging** — bring your own logger via a minimal `Logger` interface (`*slog.Logger` works as-is), or omit it entirely (defaults to a no-op `NopLogger`).
-- **Zero-boilerplate components** — embed `BaseComponent` to get `Ready`/`Shutdown` handler registration for free.
+- **Zero-boilerplate components** — embed `Component` to get `Ready`/`Shutdown` handler registration for free.
 
 ## Installation
 
@@ -37,9 +37,9 @@ import (
 	"github.com/gingray/lifecycle"
 )
 
-// HTTPServer is a Component that depends on the Database being ready.
+// HTTPServer is a component that depends on the Database being ready.
 type HTTPServer struct {
-	lifecycle.BaseComponent
+	lifecycle.Component
 	server *http.Server
 }
 
@@ -79,10 +79,10 @@ On `SIGINT`/`SIGTERM`, the root cancels its context, which unwinds the tree: dep
 
 ## How it works
 
-Every component implements the `Component` interface:
+Every component implements the `C` interface:
 
 ```go
-type Component interface {
+type C interface {
 	Name() string
 	Ready(ctx context.Context) error
 	Run(ctx context.Context) error
@@ -105,11 +105,11 @@ Each node must have exactly one parent: adding the same node under two parents r
 
 `Node` also exposes a standalone `Shutdown(ctx)` method for tearing down a subtree manually (outside of `Run`), which applies the same bottom-up, all-children-visited semantics.
 
-For components that don't need custom orchestration, embed `BaseComponent` and register handlers instead of implementing `Ready`/`Shutdown` directly:
+For components that don't need custom orchestration, embed the `Component` struct and register handlers instead of implementing `Ready`/`Shutdown` directly. You then only add `Name` and `Run`:
 
 ```go
 type Cache struct {
-	lifecycle.BaseComponent
+	lifecycle.Component
 }
 
 func NewCache() *Cache {
